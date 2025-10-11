@@ -1,98 +1,80 @@
 """
-# Consumer Complaints ETL Pipeline
+# Consumer Complaints ETL Pipeline - S3 to Snowflake
 
 This DAG orchestrates the extraction, transformation, and loading (ETL) of consumer
-complaint data from the CFPB (Consumer Financial Protection Bureau) API into Snowflake.
+complaint data from the CFPB (Consumer Financial Protection Bureau) API into Snowflake
+via S3.
 
 ## Overview
 
 The pipeline performs the following steps:
-1. **Extract**: Fetches consumer complaint data from the CFPB API
-2. **Transform**: Validates and transforms the data
-3. **Load**: Loads the data into a Snowflake table
-4. **Validate**: Performs data quality checks
+1. **Extract**: Fetches consumer complaint data from the CFPB API for multiple companies
+2. **Upload to S3**: Saves data to S3 with automatic cleanup of old files
+3. **Stage**: Creates Snowflake external stage pointing to S3
+4. **Load**: Uses COPY INTO to load data from S3 to Snowflake
+5. **Validate**: Performs data quality checks
 
-## Data Source
+## Architecture
 
-- **API**: [CFPB Consumer Complaint Database API](https://cfpb.github.io/api/ccdb/api.html)
-- **Update Frequency**: Daily
-- **Data Scope**: Consumer complaints from the last day
+CFPB API → Local CSV → S3 Bucket → Snowflake (via COPY INTO)
 
-## Snowflake Configuration
+## Configuration
 
-The DAG expects the following Snowflake connection in Airflow:
-- **Connection ID**: `snowflake_default`
-- **Database**: Configured via `SNOWFLAKE_DATABASE` variable (default: `CONSUMER_DATA`)
-- **Schema**: Configured via `SNOWFLAKE_SCHEMA` variable (default: `PUBLIC`)
-- **Warehouse**: Configured via `SNOWFLAKE_WAREHOUSE` variable (default: `COMPUTE_WH`)
+### Airflow Connections Required:
+- `aws_default`: AWS connection for S3 access
+- `snowflake_default`: Snowflake connection
 
-## Airflow Variables (Optional)
-
-- `cfpb_lookback_days`: Number of days to look back for complaints (default: 1)
-- `cfpb_max_records`: Maximum number of records to fetch per run (default: None/unlimited)
+### Airflow Variables (Optional):
 - `snowflake_database`: Target Snowflake database (default: CONSUMER_DATA)
 - `snowflake_schema`: Target Snowflake schema (default: PUBLIC)
 - `snowflake_warehouse`: Snowflake warehouse to use (default: COMPUTE_WH)
+- `aws_s3_bucket`: S3 bucket name (required if not in connection)
 
-## Table Schema
+### Company Configuration:
+Edit `include/config.py` to add/modify companies to fetch data for.
 
-The pipeline creates a table `CONSUMER_COMPLAINTS` with the following structure:
-- complaint_id (VARCHAR, Primary Key)
-- date_received (DATE)
-- product (VARCHAR)
-- sub_product (VARCHAR)
-- issue (VARCHAR)
-- sub_issue (VARCHAR)
-- company (VARCHAR)
-- state (VARCHAR)
-- zip_code (VARCHAR)
-- tags (VARCHAR)
-- consumer_consent_provided (VARCHAR)
-- submitted_via (VARCHAR)
-- company_response_to_consumer (VARCHAR)
-- timely_response (VARCHAR)
-- consumer_disputed (VARCHAR)
-- complaint_what_happened (TEXT)
-- company_public_response (TEXT)
-- created_date (TIMESTAMP)
-- updated_date (TIMESTAMP)
-- load_timestamp (TIMESTAMP, default: CURRENT_TIMESTAMP)
+## Features
 
-## Monitoring
-
-The DAG includes built-in data quality checks:
-- Validates complaint IDs are unique
-- Checks for required fields
-- Logs record counts and processing time
-
-## Error Handling
-
-- Automatic retries (3 attempts)
-- Exponential backoff for API requests
-- Email alerts on failure (configure via default_args)
+- ✅ Multi-company data extraction
+- ✅ Automatic S3 file cleanup (keeps only latest per company)
+- ✅ Smart file selection (only loads most recent files)
+- ✅ Append mode (no data loss)
+- ✅ Comprehensive error handling and logging
+- ✅ Modular design for easy maintenance
 """
 
 import logging
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List
 
+import pandas as pd
 from airflow.decorators import dag, task
 from airflow.exceptions import AirflowException
 from airflow.models import Variable
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
-from pendulum import datetime
+from pendulum import datetime as pendulum_datetime
 
 # Add include directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "include"))
 
 from cfpb_api_client import CFPBAPIClient
-from snowflake_loader import SnowflakeLoader
+from config import (
+    COMPANY_CONFIG,
+    S3_BUCKET_PREFIX,
+    S3_CONN_ID,
+    SNOWFLAKE_CONN_ID,
+    SNOWFLAKE_STAGE_NAME,
+)
+from s3_loader import S3Loader
+from s3_to_snowflake import S3ToSnowflakeLoader
 
 logger = logging.getLogger(__name__)
 
 # Configuration constants
-DEFAULT_LOOKBACK_DAYS = 1
 DEFAULT_DATABASE = "CONSUMER_DATA"
 DEFAULT_SCHEMA = "PUBLIC"
 DEFAULT_WAREHOUSE = "COMPUTE_WH"
@@ -102,7 +84,8 @@ DEFAULT_TABLE_NAME = "CONSUMER_COMPLAINTS"
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS CONSUMER_COMPLAINTS (
     complaint_id VARCHAR(50) PRIMARY KEY,
-    date_received DATE,
+    date_received TIMESTAMP,
+    date_sent_to_company TIMESTAMP,
     product VARCHAR(255),
     sub_product VARCHAR(255),
     issue VARCHAR(500),
@@ -118,16 +101,15 @@ CREATE TABLE IF NOT EXISTS CONSUMER_COMPLAINTS (
     consumer_disputed VARCHAR(10),
     complaint_what_happened TEXT,
     company_public_response TEXT,
-    created_date TIMESTAMP,
-    updated_date TIMESTAMP,
     load_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
+COMMENT = 'Consumer complaints data from CFPB loaded from S3'
 """
 
 
 @dag(
-    dag_id="consumer_complaints_etl",
-    start_date=datetime(2024, 1, 1),
+    dag_id="consumer_complaints_elt_pipeline",
+    start_date=pendulum_datetime(2024, 1, 1),
     schedule="@daily",
     catchup=False,
     max_active_runs=1,
@@ -136,65 +118,79 @@ CREATE TABLE IF NOT EXISTS CONSUMER_COMPLAINTS (
         "owner": "data_engineering",
         "retries": 3,
         "retry_delay": 300,  # 5 minutes
-        "email_on_failure": False,  # Set to True and configure email in Airflow
+        "email_on_failure": False,
         "email_on_retry": False,
     },
-    tags=["etl", "cfpb", "consumer_complaints", "snowflake"],
-    description="Daily ETL pipeline for CFPB consumer complaint data to Snowflake",
+    tags=["etl", "cfpb", "consumer_complaints", "s3", "snowflake"],
+    description="ETL pipeline for CFPB consumer complaint data via S3 to Snowflake",
 )
-def consumer_complaints_etl():
-    """Main DAG function for consumer complaints ETL pipeline."""
+def consumer_complaints_elt_pipeline():
+    """Main DAG function for consumer complaints ETL pipeline via S3."""
 
     @task
-    def extract_complaints(**context) -> List[Dict[str, Any]]:
+    def extract_complaints_for_companies(**context) -> Dict[str, str]:
         """
-        Extract consumer complaints from CFPB API.
+        Extract consumer complaints from CFPB API for multiple companies.
 
-        This task fetches complaint data from the CFPB Consumer Complaint Database
-        API for the configured date range. It handles pagination automatically and
-        includes retry logic for API failures.
+        Fetches complaint data for each company defined in COMPANY_CONFIG
+        and saves them as CSV files in a temporary directory.
 
         Returns:
-            List of complaint dictionaries
-
-        Raises:
-            AirflowException: If API extraction fails after retries
+            Dictionary mapping company names to local CSV file paths
         """
         try:
-            # Get configuration from Airflow Variables with defaults
-            lookback_days = int(Variable.get("cfpb_lookback_days", DEFAULT_LOOKBACK_DAYS))
-            max_records = Variable.get("cfpb_max_records", None)
-            if max_records:
-                max_records = int(max_records)
+            logger.info(f"Starting complaint extraction for {len(COMPANY_CONFIG)} companies")
 
-            logger.info(f"Starting complaint extraction for last {lookback_days} day(s)")
-            logger.info(f"Max records: {max_records if max_records else 'unlimited'}")
+            # Create temporary directory for CSV files
+            temp_dir = Path("/tmp/consumer_complaints")
+            temp_dir.mkdir(exist_ok=True)
 
-            # Initialize API client
             api_client = CFPBAPIClient()
+            company_files = {}
 
             try:
-                # Fetch complaints
-                complaints = api_client.get_complaints_last_n_days(days=lookback_days)
+                for config in COMPANY_CONFIG:
+                    company_name = config["company_name"]
+                    start_date = config["start_date"]
+                    end_date = config["end_date"]
 
-                # Apply max_records limit if specified
-                if max_records and len(complaints) > max_records:
-                    logger.info(f"Limiting results to {max_records} records")
-                    complaints = complaints[:max_records]
+                    logger.info(f"Fetching complaints for: {company_name}")
+                    logger.info(f"  Date range: {start_date} to {end_date}")
 
-                logger.info(f"Successfully extracted {len(complaints)} complaints")
+                    # Fetch complaints for this company
+                    complaints = api_client.get_complaints_by_company(
+                        company_name=company_name,
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
 
-                # Push metadata to XCom
+                    if complaints:
+                        # Convert to DataFrame and save as CSV
+                        df = pd.DataFrame(complaints)
+
+                        # Sanitize filename
+                        filename = company_name.replace(" ", "_").lower()
+                        file_path = temp_dir / f"{filename}_complaints.csv"
+
+                        df.to_csv(file_path, index=False)
+                        company_files[company_name] = str(file_path)
+
+                        logger.info(f"✓ Saved {len(df)} complaints for {company_name}")
+                    else:
+                        logger.warning(f"⚠ No data returned for {company_name}")
+
+                logger.info(f"✓ Extraction complete. Processed {len(company_files)} companies")
+
+                # Push stats to XCom
                 context["ti"].xcom_push(
                     key="extraction_stats",
                     value={
-                        "total_records": len(complaints),
-                        "lookback_days": lookback_days,
+                        "companies_processed": len(company_files),
                         "extraction_timestamp": datetime.now().isoformat(),
                     },
                 )
 
-                return complaints
+                return company_files
 
             finally:
                 api_client.close()
@@ -204,106 +200,73 @@ def consumer_complaints_etl():
             raise AirflowException(f"Complaint extraction failed: {e}")
 
     @task
-    def transform_complaints(complaints: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def upload_to_s3(company_files: Dict[str, str], **context) -> List[Dict[str, str]]:
         """
-        Transform and validate complaint data.
-
-        This task performs data transformation and validation:
-        - Standardizes field names and formats
-        - Validates required fields
-        - Handles missing values
-        - Ensures data quality
+        Upload CSV files to S3 with timestamped names and cleanup old files.
 
         Args:
-            complaints: Raw complaint data from API
+            company_files: Dictionary mapping company names to local file paths
 
         Returns:
-            Transformed and validated complaint data
-
-        Raises:
-            AirflowException: If transformation or validation fails
+            List of dictionaries with upload info (company, s3_key, size_mb)
         """
         try:
-            logger.info(f"Starting transformation of {len(complaints)} complaints")
-
-            if not complaints:
-                logger.warning("No complaints to transform")
+            if not company_files:
+                logger.warning("No files to upload to S3")
                 return []
 
-            transformed = []
-            skipped = 0
+            # Get S3 configuration
+            s3_hook = S3Hook(aws_conn_id=S3_CONN_ID)
+            bucket_name = Variable.get("aws_s3_bucket", None)
 
-            for complaint in complaints:
-                try:
-                    # Extract and transform fields
-                    transformed_complaint = {
-                        "complaint_id": complaint.get("complaint_id"),
-                        "date_received": complaint.get("date_received"),
-                        "product": complaint.get("product"),
-                        "sub_product": complaint.get("sub_product"),
-                        "issue": complaint.get("issue"),
-                        "sub_issue": complaint.get("sub_issue"),
-                        "company": complaint.get("company"),
-                        "state": complaint.get("state"),
-                        "zip_code": complaint.get("zip_code"),
-                        "tags": complaint.get("tags"),
-                        "consumer_consent_provided": complaint.get("consumer_consent_provided"),
-                        "submitted_via": complaint.get("submitted_via"),
-                        "company_response_to_consumer": complaint.get("company_response"),
-                        "timely_response": complaint.get("timely"),
-                        "consumer_disputed": complaint.get("consumer_disputed"),
-                        "complaint_what_happened": complaint.get("complaint_what_happened"),
-                        "company_public_response": complaint.get("company_public_response"),
-                        "created_date": complaint.get("date_sent_to_company"),
-                        "updated_date": complaint.get("date_received"),
-                    }
+            if not bucket_name:
+                # Try to get from connection
+                connection = s3_hook.get_connection(S3_CONN_ID)
+                bucket_name = connection.extra_dejson.get("bucket_name")
 
-                    # Validate required fields
-                    if not transformed_complaint["complaint_id"]:
-                        logger.warning(f"Skipping complaint without ID: {complaint}")
-                        skipped += 1
-                        continue
+            if not bucket_name:
+                raise ValueError(
+                    "S3 bucket name not configured. Configure it using one of these methods:\n"
+                    "1. Set Airflow Variable 'aws_s3_bucket' via UI (Admin → Variables)\n"
+                    "2. Set via CLI: airflow variables set aws_s3_bucket your-bucket-name\n"
+                    "3. Add 'bucket_name' to aws_default connection Extra JSON"
+                )
 
-                    # Clean up None values and convert to strings where needed
-                    for key, value in transformed_complaint.items():
-                        if value is None:
-                            transformed_complaint[key] = None
-                        elif isinstance(value, (list, tuple)):
-                            transformed_complaint[key] = ", ".join(str(v) for v in value)
+            logger.info(f"Uploading {len(company_files)} files to S3 bucket: {bucket_name}")
 
-                    transformed.append(transformed_complaint)
-
-                except Exception as e:
-                    logger.warning(
-                        f"Error transforming complaint {complaint.get('complaint_id')}: {e}"
-                    )
-                    skipped += 1
-                    continue
-
-            logger.info(
-                f"Transformation complete: {len(transformed)} successful, {skipped} skipped"
+            # Initialize S3Loader
+            s3_loader = S3Loader(
+                s3_hook=s3_hook,
+                bucket_name=bucket_name,
+                prefix=S3_BUCKET_PREFIX,
             )
 
-            # Validate we have data after transformation
-            if not transformed:
-                raise AirflowException("No valid complaints after transformation")
+            # Upload files
+            uploaded_files = s3_loader.upload_files(company_files)
 
-            return transformed
+            # Push stats to XCom
+            context["ti"].xcom_push(
+                key="upload_stats",
+                value={
+                    "files_uploaded": len(uploaded_files),
+                    "upload_timestamp": datetime.now().isoformat(),
+                },
+            )
+
+            return uploaded_files
 
         except Exception as e:
-            logger.error(f"Failed to transform complaints: {e}", exc_info=True)
-            raise AirflowException(f"Complaint transformation failed: {e}")
+            logger.error(f"Failed to upload to S3: {e}", exc_info=True)
+            raise AirflowException(f"S3 upload failed: {e}")
 
     @task
-    def create_snowflake_table():
+    def create_snowflake_table_and_stage(**context):
         """
-        Create the Snowflake table if it doesn't exist.
+        Create Snowflake table and S3 external stage if they don't exist.
 
-        This task ensures the target table exists in Snowflake before loading data.
-        It uses the configured database, schema, and warehouse from Airflow Variables.
-
-        Raises:
-            AirflowException: If table creation fails
+        This task:
+        1. Creates the CONSUMER_COMPLAINTS table
+        2. Creates an external stage pointing to the S3 bucket
         """
         try:
             # Get Snowflake configuration
@@ -311,90 +274,130 @@ def consumer_complaints_etl():
             schema = Variable.get("snowflake_schema", DEFAULT_SCHEMA)
             warehouse = Variable.get("snowflake_warehouse", DEFAULT_WAREHOUSE)
 
-            logger.info(f"Creating table if not exists: {database}.{schema}.{DEFAULT_TABLE_NAME}")
+            # Get S3 bucket name
+            bucket_name = Variable.get("aws_s3_bucket", None)
+
+            # Initialize S3 hook for connection fallback
+            s3_hook = S3Hook(aws_conn_id=S3_CONN_ID)
+
+            if not bucket_name:
+                # Try to get from connection
+                connection = s3_hook.get_connection(S3_CONN_ID)
+                bucket_name = connection.extra_dejson.get("bucket_name")
+
+            if not bucket_name:
+                raise ValueError(
+                    "S3 bucket name not configured. Configure it using one of these methods:\n"
+                    "1. Set Airflow Variable 'aws_s3_bucket' via UI (Admin → Variables)\n"
+                    "2. Set via CLI: airflow variables set aws_s3_bucket your-bucket-name\n"
+                    "3. Add 'bucket_name' to aws_default connection Extra JSON"
+                )
+
+            logger.info(f"Setting up Snowflake: {database}.{schema}.{DEFAULT_TABLE_NAME}")
 
             # Initialize Snowflake hook
-            hook = SnowflakeHook(
-                snowflake_conn_id="snowflake_default",
+            snowflake_hook = SnowflakeHook(
+                snowflake_conn_id=SNOWFLAKE_CONN_ID,
                 warehouse=warehouse,
                 database=database,
                 schema=schema,
             )
 
-            # Create loader and table
-            loader = SnowflakeLoader(hook)
-            loader.create_table_if_not_exists(
-                table_name=DEFAULT_TABLE_NAME,
+            # Initialize S3ToSnowflakeLoader
+            loader = S3ToSnowflakeLoader(
+                snowflake_hook=snowflake_hook,
+                s3_hook=s3_hook,
                 database=database,
                 schema=schema,
+                warehouse=warehouse,
+            )
+
+            # Create table and stage
+            loader.create_table_and_stage(
+                table_name=DEFAULT_TABLE_NAME,
+                stage_name=SNOWFLAKE_STAGE_NAME,
+                bucket_name=bucket_name,
+                s3_prefix=S3_BUCKET_PREFIX,
                 create_table_sql=CREATE_TABLE_SQL,
             )
 
-            logger.info("Table creation task completed successfully")
+            logger.info("✓ Snowflake setup complete")
 
         except Exception as e:
-            logger.error(f"Failed to create Snowflake table: {e}", exc_info=True)
-            raise AirflowException(f"Table creation failed: {e}")
+            logger.error(f"Failed to setup Snowflake: {e}", exc_info=True)
+            raise AirflowException(f"Snowflake setup failed: {e}")
 
     @task
-    def load_to_snowflake(complaints: List[Dict[str, Any]], **context) -> Dict[str, Any]:
+    def load_from_s3_to_snowflake(
+        uploaded_files: List[Dict[str, str]], **context
+    ) -> Dict[str, Any]:
         """
-        Load transformed complaints into Snowflake.
+        Load data from S3 to Snowflake using COPY INTO command.
 
-        This task loads the transformed complaint data into the Snowflake table.
-        It handles batch loading and provides detailed logging of the load process.
+        This task identifies the most recent file for each company and loads
+        only those files to prevent duplicate data loads.
 
         Args:
-            complaints: Transformed complaint data
+            uploaded_files: List of uploaded file info
 
         Returns:
             Load statistics dictionary
-
-        Raises:
-            AirflowException: If loading fails
         """
         try:
-            if not complaints:
-                logger.warning("No complaints to load")
-                return {"rows_loaded": 0}
+            if not uploaded_files:
+                logger.warning("No files to load from S3")
+                return {"rows_loaded": 0, "files_loaded": 0}
 
             # Get Snowflake configuration
             database = Variable.get("snowflake_database", DEFAULT_DATABASE)
             schema = Variable.get("snowflake_schema", DEFAULT_SCHEMA)
             warehouse = Variable.get("snowflake_warehouse", DEFAULT_WAREHOUSE)
 
-            logger.info(
-                f"Loading {len(complaints)} complaints to "
-                f"{database}.{schema}.{DEFAULT_TABLE_NAME}"
-            )
+            logger.info(f"Loading data from S3 to {database}.{schema}.{DEFAULT_TABLE_NAME}")
 
-            # Initialize Snowflake hook and loader
-            hook = SnowflakeHook(
-                snowflake_conn_id="snowflake_default",
+            # Initialize hooks
+            snowflake_hook = SnowflakeHook(
+                snowflake_conn_id=SNOWFLAKE_CONN_ID,
                 warehouse=warehouse,
                 database=database,
                 schema=schema,
             )
 
-            loader = SnowflakeLoader(hook)
+            s3_hook = S3Hook(aws_conn_id=S3_CONN_ID)
 
-            # Load data
-            rows_loaded = loader.load_json_data(
-                data=complaints,
-                table_name=DEFAULT_TABLE_NAME,
+            # Initialize S3ToSnowflakeLoader
+            loader = S3ToSnowflakeLoader(
+                snowflake_hook=snowflake_hook,
+                s3_hook=s3_hook,
                 database=database,
                 schema=schema,
-                if_exists="append",
-                chunk_size=10000,
+                warehouse=warehouse,
+            )
+
+            # Get latest files by company
+            latest_files = loader.get_latest_files_by_company(
+                stage_name=SNOWFLAKE_STAGE_NAME,
+                prefix=S3_BUCKET_PREFIX,
+            )
+
+            if not latest_files:
+                logger.warning("No files found in stage")
+                return {"rows_loaded": 0, "files_loaded": 0}
+
+            # Copy data from S3 to Snowflake
+            total_files, total_rows, total_errors = loader.copy_from_s3_to_snowflake(
+                table_name=DEFAULT_TABLE_NAME,
+                stage_name=SNOWFLAKE_STAGE_NAME,
+                file_list=latest_files,
             )
 
             load_stats = {
-                "rows_loaded": rows_loaded,
+                "rows_loaded": total_rows,
+                "files_loaded": total_files,
+                "errors": total_errors,
                 "table": f"{database}.{schema}.{DEFAULT_TABLE_NAME}",
                 "load_timestamp": datetime.now().isoformat(),
             }
-
-            logger.info(f"Successfully loaded {rows_loaded} rows to Snowflake")
 
             # Push stats to XCom
             context["ti"].xcom_push(key="load_stats", value=load_stats)
@@ -402,27 +405,26 @@ def consumer_complaints_etl():
             return load_stats
 
         except Exception as e:
-            logger.error(f"Failed to load complaints to Snowflake: {e}", exc_info=True)
-            raise AirflowException(f"Snowflake load failed: {e}")
+            logger.error(f"Failed to load from S3 to Snowflake: {e}", exc_info=True)
+            raise AirflowException(f"S3 to Snowflake load failed: {e}")
 
     @task
     def validate_data_quality(load_stats: Dict[str, Any]) -> Dict[str, Any]:
         """
         Perform data quality validation on loaded data.
 
-        This task runs data quality checks on the loaded data:
-        - Verifies row count
-        - Checks for duplicates
-        - Validates data completeness
+        Checks:
+        - Row count verification
+        - Duplicate complaint IDs
+        - Null values in critical fields
+        - Date range validation
+        - Top companies statistics
 
         Args:
             load_stats: Statistics from the load operation
 
         Returns:
             Validation results dictionary
-
-        Raises:
-            AirflowException: If critical data quality issues are found
         """
         try:
             logger.info("Starting data quality validation")
@@ -432,68 +434,33 @@ def consumer_complaints_etl():
             schema = Variable.get("snowflake_schema", DEFAULT_SCHEMA)
             warehouse = Variable.get("snowflake_warehouse", DEFAULT_WAREHOUSE)
 
-            # Initialize Snowflake hook and loader
-            hook = SnowflakeHook(
-                snowflake_conn_id="snowflake_default",
+            # Initialize hooks
+            snowflake_hook = SnowflakeHook(
+                snowflake_conn_id=SNOWFLAKE_CONN_ID,
                 warehouse=warehouse,
                 database=database,
                 schema=schema,
             )
 
-            loader = SnowflakeLoader(hook)
+            s3_hook = S3Hook(aws_conn_id=S3_CONN_ID)
 
-            # Get total row count
-            total_rows = loader.get_table_row_count(
-                table_name=DEFAULT_TABLE_NAME, database=database, schema=schema
+            # Initialize S3ToSnowflakeLoader
+            loader = S3ToSnowflakeLoader(
+                snowflake_hook=snowflake_hook,
+                s3_hook=s3_hook,
+                database=database,
+                schema=schema,
+                warehouse=warehouse,
             )
 
-            # Check for duplicates
-            duplicate_query = f"""
-            SELECT COUNT(*) - COUNT(DISTINCT complaint_id) as duplicate_count
-            FROM {database}.{schema}.{DEFAULT_TABLE_NAME}
-            """
-            duplicate_result = loader.execute_query(duplicate_query)
-            duplicate_count = duplicate_result[0][0] if duplicate_result else 0
+            # Validate data quality
+            validation_results = loader.validate_data_quality(
+                table_name=DEFAULT_TABLE_NAME,
+                rows_loaded_this_run=load_stats.get("rows_loaded", 0),
+            )
 
-            # Check for null complaint_ids
-            null_id_query = f"""
-            SELECT COUNT(*)
-            FROM {database}.{schema}.{DEFAULT_TABLE_NAME}
-            WHERE complaint_id IS NULL
-            """
-            null_id_result = loader.execute_query(null_id_query)
-            null_id_count = null_id_result[0][0] if null_id_result else 0
-
-            # Compile validation results
-            validation_results = {
-                "total_rows_in_table": total_rows,
-                "rows_loaded_this_run": load_stats.get("rows_loaded", 0),
-                "duplicate_complaint_ids": duplicate_count,
-                "null_complaint_ids": null_id_count,
-                "validation_passed": True,
-                "validation_timestamp": datetime.now().isoformat(),
-            }
-
-            # Check for critical issues
-            issues = []
-            if null_id_count > 0:
-                issues.append(f"Found {null_id_count} records with null complaint_id")
-
-            if duplicate_count > 0:
-                logger.warning(f"Found {duplicate_count} duplicate complaint IDs")
-                # Note: Duplicates might be expected if we're appending daily data
-
-            if issues:
-                validation_results["validation_passed"] = False
-                validation_results["issues"] = issues
-                logger.warning(f"Data quality issues found: {issues}")
-
-                # Uncomment to fail on data quality issues
-                # raise AirflowException(f"Data quality validation failed: {issues}")
-            else:
-                logger.info("All data quality checks passed")
-
-            logger.info(f"Validation results: {validation_results}")
+            # Add files loaded count
+            validation_results["files_loaded_this_run"] = load_stats.get("files_loaded", 0)
 
             return validation_results
 
@@ -501,16 +468,16 @@ def consumer_complaints_etl():
             logger.error(f"Data quality validation failed: {e}", exc_info=True)
             raise AirflowException(f"Validation failed: {e}")
 
-    # Define task dependencies using TaskFlow API
-    complaints = extract_complaints()
-    transformed_complaints = transform_complaints(complaints)
-    table_created = create_snowflake_table()
-    load_stats = load_to_snowflake(transformed_complaints)
+    # Define task dependencies
+    company_files = extract_complaints_for_companies()
+    uploaded_files = upload_to_s3(company_files)
+    table_and_stage_created = create_snowflake_table_and_stage()
+    load_stats = load_from_s3_to_snowflake(uploaded_files)
     validation_results = validate_data_quality(load_stats)
 
     # Set explicit dependencies
-    table_created >> load_stats
+    uploaded_files >> table_and_stage_created >> load_stats
 
 
 # Instantiate the DAG
-consumer_complaints_etl()
+consumer_complaints_elt_pipeline()
