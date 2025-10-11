@@ -19,15 +19,26 @@ This pipeline provides a production-ready, automated solution for:
 ## 🏗️ Architecture
 
 ```
-CFPB API → Airflow DAG → Data Transformation → Snowflake Data Warehouse
+CFPB API → Local CSV → S3 Bucket → Snowflake (via COPY INTO)
 ```
 
 ### Components
 
-- **DAG**: `consumer_complaints_etl` - Main orchestration pipeline
+- **DAG**: `consumer_complaints_etl_s3` - Main orchestration pipeline via S3
 - **API Client**: `cfpb_api_client.py` - Handles CFPB API interactions
-- **Data Loader**: `snowflake_loader.py` - Manages Snowflake operations
+- **Configuration**: `config.py` - Company configuration and settings
+- **Data Loader**: `snowflake_loader.py` - Manages Snowflake operations (legacy)
 - **Tests**: Comprehensive test suite for DAG validation
+
+### Pipeline Flow
+
+1. **Extract**: Fetch complaints for multiple companies from CFPB API
+2. **Save**: Convert to CSV files
+3. **Upload**: Upload to S3 with timestamped filenames
+4. **Cleanup**: Delete old S3 files (keep only latest per company)
+5. **Stage**: Create Snowflake external stage pointing to S3
+6. **Load**: Use COPY INTO to load from S3 to Snowflake
+7. **Validate**: Run data quality checks
 
 ## 📋 Prerequisites
 
@@ -54,9 +65,11 @@ Dependencies will be automatically installed when building the Docker image. The
 - `snowflake-connector-python>=3.0.0`
 - `python-dotenv>=1.0.0`
 
-### 3. Configure Snowflake Connection in Airflow
+### 3. Configure Airflow Connections
 
-Navigate to Airflow UI and create a new connection:
+#### A. Snowflake Connection
+
+Navigate to Airflow UI and create a Snowflake connection:
 
 **Connection Details:**
 
@@ -69,6 +82,18 @@ Navigate to Airflow UI and create a new connection:
 - **Warehouse**: Your compute warehouse (e.g., `COMPUTE_WH`)
 - **Database**: Target database (e.g., `CONSUMER_DATA`)
 - **Schema**: Target schema (e.g., `PUBLIC`)
+
+#### B. AWS S3 Connection
+
+Create an AWS connection for S3 access:
+
+**Connection Details:**
+
+- **Connection ID**: `aws_default`
+- **Connection Type**: `Amazon Web Services`
+- **AWS Access Key ID**: Your AWS access key
+- **AWS Secret Access Key**: Your AWS secret key
+- **Extra**: `{"region_name": "us-east-1"}` (optional)
 
 #### Using Airflow UI
 
