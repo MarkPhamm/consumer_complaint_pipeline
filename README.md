@@ -21,6 +21,8 @@ This pipeline provides a production-ready, automated solution for:
 ```
 CFPB API → Local CSV → S3 Bucket → Snowflake (via COPY INTO)
 ```
+<img width="944" height="379" alt="consumer_complaint_pipeline (1)" src="https://github.com/user-attachments/assets/048d5ab8-1efd-4a4a-90d2-981c97160e66" />
+
 
 ### Components
 
