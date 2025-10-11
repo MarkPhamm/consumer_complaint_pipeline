@@ -8,8 +8,13 @@ This pipeline provides a production-ready, automated solution for:
 
 - **Extracting** consumer complaint data from the CFPB public API
 - **Transforming** and validating the data for quality assurance
-- **Loading** the data into Snowflake data warehouse
+- **Loading** the data into Snowflake data warehouse via S3
 - **Monitoring** data quality and pipeline health
+
+### Two Ways to Run
+
+1. **Production (Airflow)**: Automated, scheduled ETL pipeline using Apache Airflow
+2. **Demo Scripts**: Standalone Python scripts for testing and development (see [Demo Scripts](#-demo-scripts) section)
 
 ## 🏗️ Architecture
 
@@ -311,10 +316,16 @@ consumer_complaint_pipeline/
 ├── include/
 │   ├── cfpb_api_client.py                 # CFPB API client utility
 │   └── snowflake_loader.py                # Snowflake loader utility
+├── src/                                    # Demo scripts (standalone)
+│   ├── cfbp_api_client_demo.py            # Fetch complaints from CFPB API
+│   ├── cfg_demo.py                        # Configuration for demo scripts
+│   ├── s3_loader_demo.py                  # Upload data to S3
+│   └── s3_to_snowflake_demo.py            # Load data from S3 to Snowflake
 ├── tests/
 │   └── dags/
 │       ├── test_dag_example.py
 │       └── test_consumer_complaints_etl.py # Pipeline tests
+├── data/                                   # Local data directory
 ├── plugins/                                # Custom Airflow plugins
 ├── requirements.txt                        # Python dependencies
 ├── packages.txt                            # System packages
@@ -322,6 +333,212 @@ consumer_complaint_pipeline/
 ├── airflow_settings.yaml                   # Airflow configuration
 └── README.md                               # This file
 ```
+
+## 🎮 Demo Scripts
+
+The `src/` directory contains standalone demo scripts that can be run independently without Airflow. These are useful for testing, development, and understanding the data pipeline flow.
+
+### 1. CFPB API Client Demo (`cfbp_api_client_demo.py`)
+
+Fetch consumer complaint data from the CFPB API for multiple companies.
+
+**Features:**
+
+- Configurable list of companies to fetch (via `cfg_demo.py`)
+- Automatic filename sanitization (spaces → underscores)
+- Saves data as CSV files in the `data/` directory
+- Handles date ranges and pagination
+
+**Usage:**
+
+```bash
+# Make sure you're in the project root
+python src/cfbp_api_client_demo.py
+```
+
+**Configuration:**
+Edit `src/cfg_demo.py` to add/modify companies:
+
+```python
+COMPANY_CONFIG = [
+    {"company_name": "jpmorgan", "start_date": "2024-01-01", "end_date": "2025-12-31"},
+    {"company_name": "bank of america", "start_date": "2024-01-01", "end_date": "2025-12-31"},
+]
+```
+
+**Output:**
+
+- `data/jpmorgan_complaints.csv`
+- `data/bank_of_america_complaints.csv`
+
+---
+
+### 2. Configuration File (`cfg_demo.py`)
+
+Centralized configuration for all demo scripts.
+
+**Structure:**
+
+```python
+COMPANY_CONFIG = [
+    {
+        "company_name": "company_name_here",
+        "start_date": "YYYY-MM-DD",
+        "end_date": "YYYY-MM-DD"
+    }
+]
+```
+
+---
+
+### 3. S3 Loader Demo (`s3_loader_demo.py`)
+
+Upload CSV files from the `data/` directory to Amazon S3.
+
+**Features:**
+
+- Uploads all CSV files in the `data/` directory
+- Adds timestamps to filenames for versioning
+- Automatic cleanup of old files (keeps only most recent per company)
+- File size tracking and progress logging
+
+**Prerequisites:**
+Create a `.env` file in the project root:
+
+```bash
+# AWS Credentials
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_S3_BUCKET=your-bucket-name
+AWS_REGION=us-east-1
+```
+
+**Usage:**
+
+```bash
+python src/s3_loader_demo.py
+```
+
+**What it does:**
+
+1. Scans `data/` directory for CSV files
+2. Uploads each file to S3 with timestamp: `consumer_complaints/YYYYMMDD_HHMMSS_company_complaints.csv`
+3. Deletes old files for the same company
+4. Shows summary of uploaded files
+
+**Example Output:**
+
+```
+📁 Processing: jpmorgan_complaints.csv
+Uploading jpmorgan_complaints.csv to s3://bucket/consumer_complaints/20251011_104520_jpmorgan_complaints.csv
+File size: 31.70 MB
+✓ Successfully uploaded
+🗑️  Cleaning up 1 old file(s) for jpmorgan
+   Deleted: consumer_complaints/20251009_154719_jpmorgan_complaints.csv
+```
+
+---
+
+### 4. S3 to Snowflake Demo (`s3_to_snowflake_demo.py`)
+
+Load data from S3 into Snowflake using external stages and COPY INTO commands.
+
+**Features:**
+
+- Creates external stage pointing to S3
+- Identifies most recent file for each company
+- Appends data to existing table (no data loss)
+- Data quality statistics and validation
+- Smart file selection (only latest per company)
+
+**Prerequisites:**
+Add Snowflake credentials to your `.env` file:
+
+```bash
+# Snowflake Credentials
+SNOWFLAKE_ACCOUNT=your_account.region
+SNOWFLAKE_USER=your_username
+SNOWFLAKE_PASSWORD=your_password
+SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+SNOWFLAKE_DATABASE=CONSUMER_DATA
+SNOWFLAKE_SCHEMA=PUBLIC
+SNOWFLAKE_ROLE=ACCOUNTADMIN
+
+# AWS Credentials (same as above)
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_S3_BUCKET=your-bucket-name
+AWS_REGION=us-east-1
+```
+
+**Usage:**
+
+```bash
+python src/s3_to_snowflake_demo.py
+```
+
+**What it does:**
+
+1. Connects to Snowflake
+2. Creates `CONSUMER_COMPLAINTS` table (if not exists)
+3. Creates external stage pointing to S3
+4. Lists all files and identifies the most recent for each company
+5. Copies only the latest files to Snowflake
+6. Shows statistics (row counts, date ranges, top products)
+
+**Example Output:**
+
+```
+Identifying most recent files by company:
+--------------------------------------------------------------------------------
+  bank_of_america: 20251011_104518_bank_of_america_complaints.csv (26.90 MB)
+  jpmorgan: 20251011_104520_jpmorgan_complaints.csv (31.70 MB)
+--------------------------------------------------------------------------------
+Total: 2 file(s) to copy
+
+Copying data from stage to CONSUMER_DATA.PUBLIC.CONSUMER_COMPLAINTS...
+  File: consumer_complaints/20251011_104518_bank_of_america_complaints.csv
+    Status: LOADED
+    Rows loaded: 82,318
+    Rows parsed: 82,318
+
+✓ SUCCESS! Data copied from S3 to Snowflake
+  Files processed: 2
+  Rows loaded: 190,373
+```
+
+---
+
+### 🔄 Complete Demo Workflow
+
+Run all scripts in sequence to see the full data pipeline:
+
+```bash
+# Step 1: Fetch data from CFPB API
+python src/cfbp_api_client_demo.py
+
+# Step 2: Upload data to S3
+python src/s3_loader_demo.py
+
+# Step 3: Load data to Snowflake
+python src/s3_to_snowflake_demo.py
+```
+
+**Data Flow:**
+
+```
+CFPB API → Local CSV (data/) → S3 Bucket → Snowflake Table
+```
+
+**Key Benefits:**
+
+- ✅ **Incremental Updates**: Only uploads/loads the latest data
+- ✅ **No Data Duplication**: Smart file selection prevents redundant loads
+- ✅ **Cost Efficient**: Automatic cleanup of old S3 files
+- ✅ **Append Mode**: New data is added without replacing existing data
+- ✅ **Production Ready**: Same patterns used in Airflow DAG
+
+---
 
 ## 🤝 Best Practices Implemented
 
