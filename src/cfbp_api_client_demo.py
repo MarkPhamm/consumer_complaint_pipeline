@@ -1,6 +1,7 @@
 # Import required libraries
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -8,6 +9,8 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+from cfg_demo import COMPANY_CONFIG
 
 # Setup logging for better visibility
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -213,42 +216,33 @@ class CFPBAPIClient:
 client = CFPBAPIClient()
 print(f"Base URL: {client.BASE_URL}")
 
-# Example: Fetch complaints for JPMorgan Chase
-print(" Fetching complaints for a specific company...")
-print("=" * 80)
+# Create data directory if it doesn't exist
+data_dir = "data"
+if not os.path.exists(data_dir):
+    os.makedirs(data_dir)
 
-company_name = "jpmorgan"
-start_date = "2024-01-01"
-end_date = "2025-12-31"
+# Loop through config and fetch complaints for each company
+for config in COMPANY_CONFIG:
+    print(f"\nFetching complaints for {config['company_name']}...")
+    print("=" * 80)
 
-# Search for JPMorgan complaints
-company_data = client.get_complaints_by_company(
-    company_name=company_name,
-    start_date=start_date,  # Optional: specify start date
-    end_date=end_date,  # Optional: specify end date
-)
+    company_data = client.get_complaints_by_company(
+        company_name=config["company_name"],
+        start_date=config["start_date"],
+        end_date=config["end_date"],
+    )
 
-if company_data:
-    df_company = pd.DataFrame(company_data)
-    print(f"\n Successfully fetched {len(df_company)} complaints")
-    print(f" DataFrame shape: {df_company.shape}")
+    if company_data:
+        df_company = pd.DataFrame(company_data)
+        print(f"✓ Fetched {len(df_company)} complaints")
 
-    # Display sample data
-    print(f"\n Sample data:")
-    print(df_company[["date_received", "company", "product", "issue", "state"]].head(10))
-
-    # Create data directory if it doesn't exist
-    import os
-
-    data_dir = "data"
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-
-    # Save to local data directory instead of absolute path
-    output_file = os.path.join(data_dir, f"{company_name}_complaints.csv")
-    df_company.to_csv(output_file, index=False)
-    print(f"Data saved to {output_file}")
-else:
-    print("WARNING: No data returned for this company")
+        # Save to CSV with sanitized filename
+        filename = config["company_name"].replace(" ", "_").lower()
+        output_file = os.path.join(data_dir, f"{filename}_complaints.csv")
+        df_company.to_csv(output_file, index=False)
+        print(f"✓ Saved to {output_file}")
+    else:
+        print(f"⚠ No data returned for {config['company_name']}")
 
 print("\n" + "=" * 80)
+print("✓ All companies processed")
