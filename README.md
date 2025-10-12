@@ -1,4 +1,5 @@
 # Consumer Complaint Pipeline
+<img width="1500" height="833" alt="image" src="https://github.com/user-attachments/assets/7a3e9f01-a1a6-4334-9c78-fdf2b53c02b4" />
 
 An Apache Airflow ETL pipeline that extracts consumer complaint data from the [CFPB (Consumer Financial Protection Bureau) API](https://cfpb.github.io/api/ccdb/api.html) and loads it into Snowflake for analysis.
 
