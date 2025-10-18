@@ -116,8 +116,8 @@ COMMENT = 'Consumer complaints data from CFPB loaded from S3'
     doc_md=__doc__,
     default_args={
         "owner": "data_engineering",
-        "retries": 3,
-        "retry_delay": 300,  # 5 minutes
+        "retries": 0,
+        "retry_delay": 0,
         "email_on_failure": False,
         "email_on_retry": False,
     },
