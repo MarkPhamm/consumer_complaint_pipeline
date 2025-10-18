@@ -21,10 +21,16 @@ This pipeline provides a production-ready, automated solution for:
 ## 🏗️ Architecture
 
 ```
-CFPB API → Local CSV → S3 Bucket → Snowflake (via COPY INTO)
+CFPB API → Local CSV → S3 Bucket → Snowflake RAW Layer → dbt Transformation → Snowflake MARTS Layer
 ```
 
 <img width="944" height="379" alt="consumer_complaint_pipeline (1)" src="https://github.com/user-attachments/assets/048d5ab8-1efd-4a4a-90d2-981c97160e66" />
+
+### Data Transformation Layer
+
+This ETL pipeline loads raw data into `CONSUMER_COMPLAINTS_DB.RAW.RAW__CONSUMER_COMPLAINTS`. For data transformation and modeling into a star schema, see the companion dbt project:
+
+📊 **[Consumer Complaint Transformation](https://github.com/MarkPhamm/consumer_complaint_transformation)** - dbt project that transforms raw complaint data into dimensional models (fact and dimension tables) for analytics.
 
 ### Components
 
@@ -588,10 +594,17 @@ This pipeline follows industry best practices:
 
 ## 📚 Resources
 
+### Related Projects
+
+- **[Consumer Complaint Transformation](https://github.com/MarkPhamm/consumer_complaint_transformation)** - dbt project for transforming raw data into analytics-ready dimensional models
+
+### Documentation
+
 - [CFPB API Documentation](https://cfpb.github.io/api/ccdb/api.html)
 - [Apache Airflow Documentation](https://airflow.apache.org/docs/)
 - [Snowflake Python Connector](https://docs.snowflake.com/en/user-guide/python-connector.html)
 - [Astronomer Documentation](https://www.astronomer.io/docs/)
+- [dbt Documentation](https://docs.getdbt.com/)
 
 ## 📝 License
 
