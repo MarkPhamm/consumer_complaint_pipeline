@@ -71,7 +71,11 @@ class S3ToSnowflakeLoader:
 
             # Create table
             logger.info(f"Creating table if not exists: {self.database}.{self.schema}.{table_name}")
-            cursor.execute(create_table_sql)
+            # Format the SQL with actual database, schema, and table_name values
+            formatted_sql = create_table_sql.format(
+                database=self.database, schema=self.schema, table_name=table_name
+            )
+            cursor.execute(formatted_sql)
             logger.info(f"✓ Table {self.database}.{self.schema}.{table_name} is ready")
 
             # Get AWS credentials

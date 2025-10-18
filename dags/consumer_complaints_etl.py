@@ -75,14 +75,14 @@ from s3_to_snowflake import S3ToSnowflakeLoader
 logger = logging.getLogger(__name__)
 
 # Configuration constants
-DEFAULT_DATABASE = "CONSUMER_DATA"
-DEFAULT_SCHEMA = "PUBLIC"
+DEFAULT_DATABASE = "CONSUMER_COMPLAINTS_DB"
+DEFAULT_SCHEMA = "RAW"
 DEFAULT_WAREHOUSE = "COMPUTE_WH"
-DEFAULT_TABLE_NAME = "CONSUMER_COMPLAINTS"
+DEFAULT_TABLE_NAME = "RAW__CONSUMER_COMPLAINTS"
 
 # Snowflake table DDL
 CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS CONSUMER_COMPLAINTS (
+CREATE TABLE IF NOT EXISTS {database}.{schema}.{table_name} (
     complaint_id VARCHAR(50) PRIMARY KEY,
     date_received TIMESTAMP,
     date_sent_to_company TIMESTAMP,
