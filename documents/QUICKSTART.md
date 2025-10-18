@@ -14,9 +14,9 @@ Run the provided SQL script in your Snowflake worksheet:
 
 This creates:
 
-- Database: `CONSUMER_DATA`
-- Schema: `PUBLIC`
-- Table: `CONSUMER_COMPLAINTS`
+- Database: `CONSUMER_COMPLAINTS_DB`
+- Schema: `RAW`
+- Table: `RAW__CONSUMER_COMPLAINTS`
 - Warehouse: `COMPUTE_WH`
 - Role: `ETL_ROLE` with appropriate permissions
 
@@ -46,7 +46,7 @@ Wait for Airflow to start (usually 30-60 seconds).
      {
        "account": "your_account",
        "warehouse": "COMPUTE_WH",
-       "database": "CONSUMER_DATA",
+       "database": "CONSUMER_COMPLAINTS_DB",
        "role": "SYSADMIN"
      }
      ```
@@ -66,14 +66,14 @@ Wait for Airflow to start (usually 30-60 seconds).
 Run in Snowflake:
 
 ```sql
-USE DATABASE CONSUMER_DATA;
-USE SCHEMA PUBLIC;
+USE DATABASE CONSUMER_COMPLAINTS_DB;
+USE SCHEMA RAW;
 
 -- Check data
-SELECT COUNT(*) FROM CONSUMER_COMPLAINTS;
+SELECT COUNT(*) FROM RAW__CONSUMER_COMPLAINTS;
 
 -- View sample
-SELECT * FROM CONSUMER_COMPLAINTS LIMIT 10;
+SELECT * FROM RAW__CONSUMER_COMPLAINTS LIMIT 10;
 ```
 
 ## ✅ What You Just Built
@@ -119,8 +119,9 @@ consumer_complaint_pipeline/
 
 ### Snowflake Objects
 
-- **Database**: `CONSUMER_DATA`
-- **Table**: `CONSUMER_COMPLAINTS` (19 columns)
+- **Database**: `CONSUMER_COMPLAINTS_DB`
+- **Schema**: `RAW`
+- **Table**: `RAW__CONSUMER_COMPLAINTS` (19 columns)
 - **Views**:
   - `COMPLAINTS_BY_PRODUCT`
   - `COMPLAINTS_BY_DATE`
@@ -138,8 +139,8 @@ Customize behavior via **Admin → Variables**:
 |----------|---------|-------------|
 | `cfpb_lookback_days` | `1` | Days of data to fetch |
 | `cfpb_max_records` | unlimited | Max records per run |
-| `snowflake_database` | `CONSUMER_DATA` | Target database |
-| `snowflake_schema` | `PUBLIC` | Target schema |
+| `snowflake_database` | `CONSUMER_COMPLAINTS_DB` | Target database |
+| `snowflake_schema` | `RAW` | Target schema |
 | `snowflake_warehouse` | `COMPUTE_WH` | Compute warehouse |
 
 ### DAG Schedule

@@ -14,10 +14,10 @@ USE ROLE ACCOUNTADMIN;
 -- 1. CREATE DATABASE AND SCHEMA
 -- ============================================================================
 
-CREATE DATABASE IF NOT EXISTS CONSUMER_DATA
+CREATE DATABASE IF NOT EXISTS CONSUMER_COMPLAINTS_DB
     COMMENT = 'Database for consumer complaint data from CFPB';
 
-CREATE SCHEMA IF NOT EXISTS CONSUMER_DATA.PUBLIC
+CREATE SCHEMA IF NOT EXISTS CONSUMER_COMPLAINTS_DB.RAW
     COMMENT = 'Schema for consumer complaint tables';
 
 -- ============================================================================
@@ -45,13 +45,13 @@ CREATE ROLE IF NOT EXISTS ETL_ROLE
     COMMENT = 'Role for ETL operations';
 
 -- Grant database and schema usage
-GRANT USAGE ON DATABASE CONSUMER_DATA TO ROLE ETL_ROLE;
-GRANT USAGE ON SCHEMA CONSUMER_DATA.PUBLIC TO ROLE ETL_ROLE;
+GRANT USAGE ON DATABASE CONSUMER_COMPLAINTS_DB TO ROLE ETL_ROLE;
+GRANT USAGE ON SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE ETL_ROLE;
 
 -- Grant table permissions
-GRANT CREATE TABLE ON SCHEMA CONSUMER_DATA.PUBLIC TO ROLE ETL_ROLE;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA CONSUMER_DATA.PUBLIC TO ROLE ETL_ROLE;
-GRANT SELECT, INSERT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA CONSUMER_DATA.PUBLIC TO ROLE ETL_ROLE;
+GRANT CREATE TABLE ON SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE ETL_ROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE ETL_ROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE ETL_ROLE;
 
 -- Grant warehouse usage
 GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE ETL_ROLE;
@@ -73,11 +73,11 @@ GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE ETL_ROLE;
 -- 5. CREATE TABLE
 -- ============================================================================
 
-USE DATABASE CONSUMER_DATA;
-USE SCHEMA PUBLIC;
+USE DATABASE CONSUMER_COMPLAINTS_DB;
+USE SCHEMA RAW;
 USE WAREHOUSE COMPUTE_WH;
 
-CREATE TABLE IF NOT EXISTS CONSUMER_COMPLAINTS (
+CREATE TABLE IF NOT EXISTS RAW__CONSUMER_COMPLAINTS (
     -- Primary key
     complaint_id VARCHAR(50) PRIMARY KEY,
     
@@ -134,7 +134,7 @@ SELECT
     COUNT(CASE WHEN timely_response = 'Yes' THEN 1 END) as timely_response_count,
     MIN(date_received) as earliest_complaint,
     MAX(date_received) as latest_complaint
-FROM CONSUMER_COMPLAINTS
+FROM RAW__CONSUMER_COMPLAINTS
 GROUP BY product
 ORDER BY total_complaints DESC;
 
@@ -145,7 +145,7 @@ SELECT
     COUNT(*) as daily_complaints,
     COUNT(DISTINCT product) as unique_products,
     COUNT(DISTINCT company) as unique_companies
-FROM CONSUMER_COMPLAINTS
+FROM RAW__CONSUMER_COMPLAINTS
 GROUP BY complaint_date
 ORDER BY complaint_date DESC;
 
@@ -159,7 +159,7 @@ SELECT
     ROUND(COUNT(CASE WHEN timely_response = 'Yes' THEN 1 END) * 100.0 / COUNT(*), 2) as timely_response_pct,
     MIN(date_received) as earliest_complaint,
     MAX(date_received) as latest_complaint
-FROM CONSUMER_COMPLAINTS
+FROM RAW__CONSUMER_COMPLAINTS
 GROUP BY company
 ORDER BY total_complaints DESC;
 
@@ -170,7 +170,7 @@ SELECT
     COUNT(*) as total_complaints,
     COUNT(DISTINCT company) as unique_companies,
     COUNT(DISTINCT product) as unique_products
-FROM CONSUMER_COMPLAINTS
+FROM RAW__CONSUMER_COMPLAINTS
 WHERE state IS NOT NULL
 GROUP BY state
 ORDER BY total_complaints DESC;
@@ -190,17 +190,17 @@ SELECT
     MIN(load_timestamp) as first_load,
     MAX(load_timestamp) as last_load,
     DATEDIFF('day', MIN(date_received), MAX(date_received)) as date_range_days
-FROM CONSUMER_COMPLAINTS;
+FROM RAW__CONSUMER_COMPLAINTS;
 
 -- ============================================================================
 -- 7. VERIFY SETUP
 -- ============================================================================
 
 -- Show created objects
-SHOW DATABASES LIKE 'CONSUMER_DATA';
-SHOW SCHEMAS IN DATABASE CONSUMER_DATA;
-SHOW TABLES IN SCHEMA CONSUMER_DATA.PUBLIC;
-SHOW VIEWS IN SCHEMA CONSUMER_DATA.PUBLIC;
+SHOW DATABASES LIKE 'CONSUMER_COMPLAINTS_DB';
+SHOW SCHEMAS IN DATABASE CONSUMER_COMPLAINTS_DB;
+SHOW TABLES IN SCHEMA CONSUMER_COMPLAINTS_DB.RAW;
+SHOW VIEWS IN SCHEMA CONSUMER_COMPLAINTS_DB.RAW;
 
 -- Test permissions (will fail if permissions not set correctly)
 SELECT 'Setup verification: All permissions granted successfully!' as status;
@@ -213,10 +213,10 @@ SHOW GRANTS TO ROLE ETL_ROLE;
 -- ============================================================================
 
 -- Count total records
--- SELECT COUNT(*) FROM CONSUMER_COMPLAINTS;
+-- SELECT COUNT(*) FROM RAW__CONSUMER_COMPLAINTS;
 
 -- View sample data
--- SELECT * FROM CONSUMER_COMPLAINTS LIMIT 10;
+-- SELECT * FROM RAW__CONSUMER_COMPLAINTS LIMIT 10;
 
 -- View summaries
 -- SELECT * FROM COMPLAINTS_BY_PRODUCT;
@@ -229,10 +229,10 @@ SHOW GRANTS TO ROLE ETL_ROLE;
 -- ============================================================================
 
 -- Add clustering key for better query performance (run after data is loaded)
--- ALTER TABLE CONSUMER_COMPLAINTS CLUSTER BY (date_received);
+-- ALTER TABLE RAW__CONSUMER_COMPLAINTS CLUSTER BY (date_received);
 
 -- Set data retention (7 years for compliance)
--- ALTER TABLE CONSUMER_COMPLAINTS SET DATA_RETENTION_TIME_IN_DAYS = 2555;
+-- ALTER TABLE RAW__CONSUMER_COMPLAINTS SET DATA_RETENTION_TIME_IN_DAYS = 2555;
 
 -- ============================================================================
 -- SETUP COMPLETE

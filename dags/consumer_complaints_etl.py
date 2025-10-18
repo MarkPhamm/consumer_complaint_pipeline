@@ -25,8 +25,8 @@ CFPB API → Local CSV → S3 Bucket → Snowflake (via COPY INTO)
 - `snowflake_default`: Snowflake connection
 
 ### Airflow Variables (Optional):
-- `snowflake_database`: Target Snowflake database (default: CONSUMER_DATA)
-- `snowflake_schema`: Target Snowflake schema (default: PUBLIC)
+- `snowflake_database`: Target Snowflake database (default: CONSUMER_COMPLAINTS_DB)
+- `snowflake_schema`: Target Snowflake schema (default: RAW)
 - `snowflake_warehouse`: Snowflake warehouse to use (default: COMPUTE_WH)
 - `aws_s3_bucket`: S3 bucket name (required if not in connection)
 

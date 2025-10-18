@@ -27,16 +27,16 @@ Log into your Snowflake account and run the following SQL commands:
 
 ```sql
 -- Create database
-CREATE DATABASE IF NOT EXISTS CONSUMER_DATA
+CREATE DATABASE IF NOT EXISTS CONSUMER_COMPLAINTS_DB
     COMMENT = 'Database for consumer complaint data from CFPB';
 
 -- Create schema
-CREATE SCHEMA IF NOT EXISTS CONSUMER_DATA.PUBLIC
+CREATE SCHEMA IF NOT EXISTS CONSUMER_COMPLAINTS_DB.RAW
     COMMENT = 'Schema for consumer complaint tables';
 
 -- Switch to the new database and schema
-USE DATABASE CONSUMER_DATA;
-USE SCHEMA PUBLIC;
+USE DATABASE CONSUMER_COMPLAINTS_DB;
+USE SCHEMA RAW;
 ```
 
 ### Step 2: Create or Verify Warehouse
@@ -62,11 +62,11 @@ CREATE ROLE IF NOT EXISTS ETL_ROLE
     COMMENT = 'Role for ETL operations';
 
 -- Grant permissions to the role
-GRANT USAGE ON DATABASE CONSUMER_DATA TO ROLE ETL_ROLE;
-GRANT USAGE ON SCHEMA CONSUMER_DATA.PUBLIC TO ROLE ETL_ROLE;
-GRANT CREATE TABLE ON SCHEMA CONSUMER_DATA.PUBLIC TO ROLE ETL_ROLE;
-GRANT INSERT, SELECT, UPDATE, DELETE ON ALL TABLES IN SCHEMA CONSUMER_DATA.PUBLIC TO ROLE ETL_ROLE;
-GRANT INSERT, SELECT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA CONSUMER_DATA.PUBLIC TO ROLE ETL_ROLE;
+GRANT USAGE ON DATABASE CONSUMER_COMPLAINTS_DB TO ROLE ETL_ROLE;
+GRANT USAGE ON SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE ETL_ROLE;
+GRANT CREATE TABLE ON SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE ETL_ROLE;
+GRANT INSERT, SELECT, UPDATE, DELETE ON ALL TABLES IN SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE ETL_ROLE;
+GRANT INSERT, SELECT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE ETL_ROLE;
 GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE ETL_ROLE;
 
 -- Create a user for Airflow (or use existing user)
@@ -84,8 +84,8 @@ GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE ETL_ROLE;
 
 ```sql
 -- Verify database access
-USE DATABASE CONSUMER_DATA;
-USE SCHEMA PUBLIC;
+USE DATABASE CONSUMER_COMPLAINTS_DB;
+USE SCHEMA RAW;
 
 -- Test table creation
 CREATE OR REPLACE TABLE test_table (id INT);
@@ -119,13 +119,13 @@ The dependencies in `requirements.txt` will be automatically installed.
 Connection Id: snowflake_default
 Connection Type: Snowflake
 Host: your_account.snowflakecomputing.com
-Schema: PUBLIC
+Schema: RAW
 Login: your_username
 Password: your_password
 Extra: {
     "account": "your_account",
     "warehouse": "COMPUTE_WH",
-    "database": "CONSUMER_DATA",
+    "database": "CONSUMER_COMPLAINTS_DB",
     "region": "us-east-1",
     "role": "ETL_ROLE"
 }
@@ -142,11 +142,11 @@ airflow connections add 'snowflake_default' \
     --conn-login 'your_username' \
     --conn-password 'your_password' \
     --conn-host 'your_account.snowflakecomputing.com' \
-    --conn-schema 'PUBLIC' \
+    --conn-schema 'RAW' \
     --conn-extra '{
         "account": "your_account",
         "warehouse": "COMPUTE_WH",
-        "database": "CONSUMER_DATA",
+        "database": "CONSUMER_COMPLAINTS_DB",
         "region": "us-east-1",
         "role": "ETL_ROLE"
     }'
@@ -157,7 +157,7 @@ airflow connections add 'snowflake_default' \
 Create a `.env` file (not tracked in git):
 
 ```bash
-AIRFLOW_CONN_SNOWFLAKE_DEFAULT='snowflake://your_username:your_password@your_account/CONSUMER_DATA/PUBLIC?warehouse=COMPUTE_WH&role=ETL_ROLE'
+AIRFLOW_CONN_SNOWFLAKE_DEFAULT='snowflake://your_username:your_password@your_account/CONSUMER_COMPLAINTS_DB/RAW?warehouse=COMPUTE_WH&role=ETL_ROLE'
 ```
 
 ### Step 3: Configure Airflow Variables (Optional)
@@ -173,16 +173,16 @@ Set these variables to customize pipeline behavior:
 |-----|-------|-------------|
 | `cfpb_lookback_days` | `1` | Days to look back for complaints |
 | `cfpb_max_records` | `` | Max records per run (blank = unlimited) |
-| `snowflake_database` | `CONSUMER_DATA` | Target database |
-| `snowflake_schema` | `PUBLIC` | Target schema |
+| `snowflake_database` | `CONSUMER_COMPLAINTS_DB` | Target database |
+| `snowflake_schema` | `RAW` | Target schema |
 | `snowflake_warehouse` | `COMPUTE_WH` | Compute warehouse |
 
 #### Using Airflow CLI
 
 ```bash
 airflow variables set cfpb_lookback_days 1
-airflow variables set snowflake_database CONSUMER_DATA
-airflow variables set snowflake_schema PUBLIC
+airflow variables set snowflake_database CONSUMER_COMPLAINTS_DB
+airflow variables set snowflake_schema RAW
 airflow variables set snowflake_warehouse COMPUTE_WH
 ```
 
@@ -207,17 +207,17 @@ airflow variables set snowflake_warehouse COMPUTE_WH
 After a successful run, verify the data in Snowflake:
 
 ```sql
-USE DATABASE CONSUMER_DATA;
-USE SCHEMA PUBLIC;
+USE DATABASE CONSUMER_COMPLAINTS_DB;
+USE SCHEMA RAW;
 
 -- Check if table exists
-SHOW TABLES LIKE 'CONSUMER_COMPLAINTS';
+SHOW TABLES LIKE 'RAW__CONSUMER_COMPLAINTS';
 
 -- Check row count
-SELECT COUNT(*) FROM CONSUMER_COMPLAINTS;
+SELECT COUNT(*) FROM RAW__CONSUMER_COMPLAINTS;
 
 -- View sample data
-SELECT * FROM CONSUMER_COMPLAINTS LIMIT 10;
+SELECT * FROM RAW__CONSUMER_COMPLAINTS LIMIT 10;
 
 -- Check data quality
 SELECT 
@@ -228,13 +228,13 @@ SELECT
     MIN(date_received) as earliest_date,
     MAX(date_received) as latest_date,
     MAX(load_timestamp) as last_load
-FROM CONSUMER_COMPLAINTS;
+FROM RAW__CONSUMER_COMPLAINTS;
 
 -- Check by product
 SELECT 
     product,
     COUNT(*) as complaint_count
-FROM CONSUMER_COMPLAINTS
+FROM RAW__CONSUMER_COMPLAINTS
 GROUP BY product
 ORDER BY complaint_count DESC
 LIMIT 10;
@@ -330,14 +330,14 @@ curl "https://www.consumerfinance.gov/data-research/consumer-complaints/search/a
 3. Try creating table manually:
 
    ```sql
-   USE DATABASE CONSUMER_DATA;
-   USE SCHEMA PUBLIC;
+   USE DATABASE CONSUMER_COMPLAINTS_DB;
+   USE SCHEMA RAW;
    
    -- Check existing tables
    SHOW TABLES;
    
    -- Drop if exists (careful!)
-   -- DROP TABLE IF EXISTS CONSUMER_COMPLAINTS;
+   -- DROP TABLE IF EXISTS RAW__CONSUMER_COMPLAINTS;
    ```
 
 ### Issue 5: Data Quality Validation Warnings
@@ -381,7 +381,7 @@ After successful setup:
        DATE_TRUNC('day', date_received) as date,
        product,
        COUNT(*) as complaint_count
-   FROM CONSUMER_COMPLAINTS
+   FROM RAW__CONSUMER_COMPLAINTS
    GROUP BY 1, 2
    ORDER BY 1 DESC, 3 DESC;
    ```
@@ -390,7 +390,7 @@ After successful setup:
 
    ```sql
    -- Example: Keep data for 7 years
-   ALTER TABLE CONSUMER_COMPLAINTS 
+   ALTER TABLE RAW__CONSUMER_COMPLAINTS 
    SET DATA_RETENTION_TIME_IN_DAYS = 2555;
    ```
 
