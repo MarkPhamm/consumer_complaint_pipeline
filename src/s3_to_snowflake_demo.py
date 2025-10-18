@@ -45,8 +45,8 @@ def load_env():
         logger.info("  SNOWFLAKE_USER=your_username")
         logger.info("  SNOWFLAKE_PASSWORD=your_password")
         logger.info("  SNOWFLAKE_WAREHOUSE=COMPUTE_WH")
-        logger.info("  SNOWFLAKE_DATABASE=CONSUMER_DATA")
-        logger.info("  SNOWFLAKE_SCHEMA=PUBLIC")
+        logger.info("  SNOWFLAKE_DATABASE=CONSUMER_COMPLAINTS_DB")
+        logger.info("  SNOWFLAKE_SCHEMA=RAW")
         logger.info("  SNOWFLAKE_ROLE=ACCOUNTADMIN")
         logger.info("\n# AWS Credentials (for S3 access)")
         logger.info("  AWS_ACCESS_KEY_ID=your_access_key")
@@ -65,8 +65,8 @@ def get_snowflake_connection():
     user = os.getenv("SNOWFLAKE_USER")
     password = os.getenv("SNOWFLAKE_PASSWORD")
     warehouse = os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH")
-    database = os.getenv("SNOWFLAKE_DATABASE", "CONSUMER_DATA")
-    schema = os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC")
+    database = os.getenv("SNOWFLAKE_DATABASE", "CONSUMER_COMPLAINTS_DB")
+    schema = os.getenv("SNOWFLAKE_SCHEMA", "RAW")
     role = os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN")
 
     if not all([account, user, password]):
@@ -126,11 +126,11 @@ def drop_table_if_exists(conn, database, schema, table_name):
 
 
 def create_table_if_not_exists(conn, database, schema):
-    """Create the CONSUMER_COMPLAINTS table if it doesn't exist."""
+    """Create the RAW__CONSUMER_COMPLAINTS table if it doesn't exist."""
     cursor = conn.cursor()
 
     create_table_sql = f"""
-    CREATE TABLE IF NOT EXISTS {database}.{schema}.CONSUMER_COMPLAINTS (
+    CREATE TABLE IF NOT EXISTS {database}.{schema}.RAW__CONSUMER_COMPLAINTS (
         complaint_id VARCHAR(50) PRIMARY KEY,
         date_received TIMESTAMP,
         date_sent_to_company TIMESTAMP,
@@ -157,7 +157,7 @@ def create_table_if_not_exists(conn, database, schema):
     try:
         logger.info("Creating table if not exists...")
         cursor.execute(create_table_sql)
-        logger.info(f"✓ Table {database}.{schema}.CONSUMER_COMPLAINTS is ready")
+        logger.info(f"✓ Table {database}.{schema}.RAW__CONSUMER_COMPLAINTS is ready")
     except Exception as e:
         logger.error(f"Failed to create table: {e}")
         raise
@@ -420,9 +420,9 @@ def copy_s3_to_snowflake():
         load_env()
 
         # Get configuration
-        database = os.getenv("SNOWFLAKE_DATABASE", "CONSUMER_DATA")
-        schema = os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC")
-        table_name = "CONSUMER_COMPLAINTS"
+        database = os.getenv("SNOWFLAKE_DATABASE", "CONSUMER_COMPLAINTS_DB")
+        schema = os.getenv("SNOWFLAKE_SCHEMA", "RAW")
+        table_name = "RAW__CONSUMER_COMPLAINTS"
         stage_name = "CONSUMER_COMPLAINTS_S3_STAGE"
 
         bucket_name = os.getenv("AWS_S3_BUCKET")

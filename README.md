@@ -1,4 +1,5 @@
 # Consumer Complaint Pipeline
+
 <img width="1500" height="833" alt="image" src="https://github.com/user-attachments/assets/7a3e9f01-a1a6-4334-9c78-fdf2b53c02b4" />
 
 An Apache Airflow ETL pipeline that extracts consumer complaint data from the [CFPB (Consumer Financial Protection Bureau) API](https://cfpb.github.io/api/ccdb/api.html) and loads it into Snowflake for analysis.
@@ -22,8 +23,8 @@ This pipeline provides a production-ready, automated solution for:
 ```
 CFPB API → Local CSV → S3 Bucket → Snowflake (via COPY INTO)
 ```
-<img width="944" height="379" alt="consumer_complaint_pipeline (1)" src="https://github.com/user-attachments/assets/048d5ab8-1efd-4a4a-90d2-981c97160e66" />
 
+<img width="944" height="379" alt="consumer_complaint_pipeline (1)" src="https://github.com/user-attachments/assets/048d5ab8-1efd-4a4a-90d2-981c97160e66" />
 
 ### Components
 
@@ -83,8 +84,8 @@ Navigate to Airflow UI and create a Snowflake connection:
 - **Password**: Your Snowflake password
 - **Role**: Your Snowflake role (e.g., `ACCOUNTADMIN`, `SYSADMIN`)
 - **Warehouse**: Your compute warehouse (e.g., `COMPUTE_WH`)
-- **Database**: Target database (e.g., `CONSUMER_DATA`)
-- **Schema**: Target schema (e.g., `PUBLIC`)
+- **Database**: Target database (e.g., `CONSUMER_COMPLAINTS_DB`)
+- **Schema**: Target schema (e.g., `RAW`)
 
 #### B. AWS S3 Connection
 
@@ -113,7 +114,7 @@ airflow connections add 'snowflake_default' \
     --conn-login 'YOUR_USERNAME' \
     --conn-password 'YOUR_PASSWORD' \
     --conn-host 'YOUR_ACCOUNT.snowflakecomputing.com' \
-    --conn-extra '{"account": "YOUR_ACCOUNT", "warehouse": "COMPUTE_WH", "database": "CONSUMER_DATA", "region": "us-east-1", "role": "SYSADMIN"}'
+    --conn-extra '{"account": "YOUR_ACCOUNT", "warehouse": "COMPUTE_WH", "database": "CONSUMER_COMPLAINTS_DB", "region": "us-east-1", "role": "SYSADMIN"}'
 ```
 
 ### 4. Configure Airflow Variables (Optional)
@@ -124,8 +125,8 @@ You can customize the pipeline behavior using Airflow Variables:
 |----------|-------------|---------------|
 | `cfpb_lookback_days` | Number of days to look back for complaints | `1` |
 | `cfpb_max_records` | Maximum records to fetch per run | `None` (unlimited) |
-| `snowflake_database` | Target Snowflake database | `CONSUMER_DATA` |
-| `snowflake_schema` | Target Snowflake schema | `PUBLIC` |
+| `snowflake_database` | Target Snowflake database | `CONSUMER_COMPLAINTS_DB` |
+| `snowflake_schema` | Target Snowflake schema | `RAW` |
 | `snowflake_warehouse` | Snowflake compute warehouse | `COMPUTE_WH` |
 
 #### Using Airflow UI
@@ -138,8 +139,8 @@ You can customize the pipeline behavior using Airflow Variables:
 
 ```bash
 airflow variables set cfpb_lookback_days 7
-airflow variables set snowflake_database CONSUMER_DATA
-airflow variables set snowflake_schema PUBLIC
+airflow variables set snowflake_database CONSUMER_COMPLAINTS_DB
+airflow variables set snowflake_schema RAW
 ```
 
 ### 5. Prepare Snowflake Database
@@ -148,22 +149,22 @@ Run these commands in your Snowflake worksheet to prepare the database:
 
 ```sql
 -- Create database and schema
-CREATE DATABASE IF NOT EXISTS CONSUMER_DATA;
-CREATE SCHEMA IF NOT EXISTS CONSUMER_DATA.PUBLIC;
+CREATE DATABASE IF NOT EXISTS CONSUMER_COMPLAINTS_DB;
+CREATE SCHEMA IF NOT EXISTS CONSUMER_COMPLAINTS_DB.RAW;
 
 -- Use the database and schema
-USE DATABASE CONSUMER_DATA;
-USE SCHEMA PUBLIC;
+USE DATABASE CONSUMER_COMPLAINTS_DB;
+USE SCHEMA RAW;
 
 -- Grant necessary permissions (adjust role as needed)
-GRANT USAGE ON DATABASE CONSUMER_DATA TO ROLE SYSADMIN;
-GRANT USAGE ON SCHEMA CONSUMER_DATA.PUBLIC TO ROLE SYSADMIN;
-GRANT CREATE TABLE ON SCHEMA CONSUMER_DATA.PUBLIC TO ROLE SYSADMIN;
-GRANT INSERT, SELECT, UPDATE, DELETE ON ALL TABLES IN SCHEMA CONSUMER_DATA.PUBLIC TO ROLE SYSADMIN;
+GRANT USAGE ON DATABASE CONSUMER_COMPLAINTS_DB TO ROLE SYSADMIN;
+GRANT USAGE ON SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE SYSADMIN;
+GRANT CREATE TABLE ON SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE SYSADMIN;
+GRANT INSERT, SELECT, UPDATE, DELETE ON ALL TABLES IN SCHEMA CONSUMER_COMPLAINTS_DB.RAW TO ROLE SYSADMIN;
 
 -- The table will be automatically created by the DAG
 -- But you can create it manually if desired:
-CREATE TABLE IF NOT EXISTS CONSUMER_COMPLAINTS (
+CREATE TABLE IF NOT EXISTS RAW__CONSUMER_COMPLAINTS (
     complaint_id VARCHAR(50) PRIMARY KEY,
     date_received DATE,
     product VARCHAR(255),
@@ -204,7 +205,7 @@ Otherwise, ensure Airflow is running and:
 
 ## 📊 Data Schema
 
-### Snowflake Table: `CONSUMER_COMPLAINTS`
+### Snowflake Table: `RAW__CONSUMER_COMPLAINTS`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -488,8 +489,8 @@ SNOWFLAKE_ACCOUNT=your_account.region
 SNOWFLAKE_USER=your_username
 SNOWFLAKE_PASSWORD=your_password
 SNOWFLAKE_WAREHOUSE=COMPUTE_WH
-SNOWFLAKE_DATABASE=CONSUMER_DATA
-SNOWFLAKE_SCHEMA=PUBLIC
+SNOWFLAKE_DATABASE=CONSUMER_COMPLAINTS_DB
+SNOWFLAKE_SCHEMA=RAW
 SNOWFLAKE_ROLE=ACCOUNTADMIN
 
 # AWS Credentials (same as above)
@@ -524,7 +525,7 @@ Identifying most recent files by company:
 --------------------------------------------------------------------------------
 Total: 2 file(s) to copy
 
-Copying data from stage to CONSUMER_DATA.PUBLIC.CONSUMER_COMPLAINTS...
+Copying data from stage to CONSUMER_COMPLAINTS_DB.RAW.RAW__CONSUMER_COMPLAINTS...
   File: consumer_complaints/20251011_104518_bank_of_america_complaints.csv
     Status: LOADED
     Rows loaded: 82,318
